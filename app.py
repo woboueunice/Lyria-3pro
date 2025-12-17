@@ -1,69 +1,74 @@
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 import google.generativeai as genai
 import os
-import base64
-from io import BytesIO
-from PIL import Image
+import requests
 
 app = Flask(__name__)
 
+# --- CONFIGURATION ---
 api_key = os.environ.get("GEMINI_API_KEY")
-
 if api_key:
     genai.configure(api_key=api_key)
 
 @app.route('/')
 def home():
-    return "🚀 L'API KJM AI est en ligne !"
+    return "🎵 Diagnostic Lyria (Musique) en ligne !"
 
-# --- NOUVEAU : ROUTE DE DIAGNOSTIC ---
-# Va sur cette page pour voir les modèles disponibles
-@app.route('/debug')
-def debug_models():
-    try:
-        models_list = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                models_list.append(m.name)
-        return jsonify({
-            "status": "success", 
-            "message": "Voici les modèles disponibles pour ta clé",
-            "models": models_list
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)})
+@app.route('/check-music')
+def check_music_model():
+    if not api_key:
+        return jsonify({"error": "Clé API manquante"}), 500
 
-@app.route('/chat', methods=['GET', 'POST'])
-def chat():
-    user_message = request.args.get('message') or request.json.get('message')
-    if not user_message:
-        return jsonify({"error": "Message manquant"}), 400
+    results = {
+        "status": "analyse_terminee",
+        "has_lyria_access": False,
+        "details": []
+    }
 
     try:
-        # TENTATIVE 1 : On essaie le modèle Flash
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(user_message)
-        return jsonify({"status": "success", "reponse": response.text})
+        # 1. On cherche le modèle dans la liste officielle
+        # Lyria est souvent caché ou en mode "preview"
+        all_models = genai.list_models()
+        found_in_list = False
         
-    except Exception as e:
-        # TENTATIVE 2 : Si Flash échoue, on essaie le vieux modèle stable "gemini-pro"
-        try:
-            print(f"Flash a échoué ({e}), passage à Gemini Pro...")
-            model_backup = genai.GenerativeModel('gemini-pro')
-            response = model_backup.generate_content(user_message)
-            return jsonify({
-                "status": "success", 
-                "reponse": response.text, 
-                "note": "Réponse générée avec Gemini Pro (Backup)"
-            })
-        except Exception as e2:
-            return jsonify({"error": "Tous les modèles ont échoué", "detail_flash": str(e), "detail_pro": str(e2)}), 500
+        for m in all_models:
+            if 'lyria' in m.name.lower() or 'music' in m.name.lower():
+                found_in_list = True
+                results['details'].append({
+                    "name": m.name,
+                    "methods": m.supported_generation_methods,
+                    "description": m.description
+                })
 
-# La partie image reste inchangée...
-@app.route('/image', methods=['GET', 'POST'])
-def generate_image():
-    # (Garde ton code image ici, je l'ai raccourci pour la lisibilité)
-    return jsonify({"status": "maintenance"}) 
+        # 2. Vérification Directe (Ping)
+        # On essaie d'obtenir les infos du modèle précis même s'il est caché
+        target_model = "models/lyria-realtime-exp"
+        try:
+            model_info = genai.get_model(target_model)
+            results['has_lyria_access'] = True
+            results['lyria_info'] = {
+                "name": model_info.name,
+                "description": model_info.description,
+                "input_token_limit": model_info.input_token_limit
+            }
+        except Exception as e:
+            results['details'].append(f"Impossible d'accéder directement à {target_model} : {str(e)}")
+
+        # 3. Vérification via API REST (Méthode de secours)
+        if not results['has_lyria_access']:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/lyria-realtime-exp?key={api_key}"
+            response = requests.get(url)
+            if response.status_code == 200:
+                results['has_lyria_access'] = True
+                results['details'].append("Accès confirmé via API REST (C'est bon signe !)")
+            else:
+                results['details'].append(f"Refus API REST: {response.status_code} - {response.text}")
+
+        return jsonify(results)
+
+    except Exception as e:
+        return jsonify({"error": "Erreur critique", "details": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
+                
